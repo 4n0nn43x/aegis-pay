@@ -1,0 +1,17 @@
+{
+  "atlantic": {
+    "name": "Pharos Atlantic Testnet",
+    "rpc": "https://atlantic.dplabs-internal.com",
+    "wss": "wss://atlantic.dplabs-internal.com",
+    "chainId": 688689,
+    "explorer": "https://atlantic.pharosscan.xyz",
+    "nativeSymbol": "PHRS"
+  },
+  "tokens": {
+    "USDC": {
+      "address": "0xE0BE08c77f415F577A1B3A9aD7a1Df1479564ec8",
+      "decimals": 6,
+      "note": "Non-official Atlantic test USDC referenced by the Pharos x402 docs."
+    }
+  }
+}

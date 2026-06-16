@@ -1,0 +1,10 @@
+# Foundry build artifacts
+out/
+cache/
+broadcast/
+
+# Local submission notes (not part of the skill package)
+SUBMISSION.md
+
+# Env / secrets
+.env
