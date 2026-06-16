@@ -14,15 +14,27 @@ interface IERC20 {
 ///         and composable: it holds the agent's working funds and only releases them
 ///         through `spend()`, which enforces a true sliding-window cap (bucketed, so it
 ///         cannot be gamed at a boundary), a per-payment cap, an optional payee allowlist,
-///         and an owner kill-switch. One compromised or hallucinating agent cannot drain
-///         the treasury faster than windowCap per windowSeconds.
+///         and an owner kill-switch. Roles are SPLIT: the agent is the `spender` (can only
+///         `spend`, within the guardrails); a separate `owner` (human/multisig) holds
+///         policy, pause, and the `withdraw` escape hatch. So a compromised agent cannot
+///         drain the treasury — it can only spend within windowCap per windowSeconds, and
+///         the owner can revoke it instantly via `setSpender`.
 ///
 /// @dev    Composability: PaymentGate (Skill #1) decides WHO may be paid; BudgetVault
 ///         (Skill #2) decides HOW MUCH may flow and EXECUTES the transfer. An agent
 ///         wires them: authorizePayment(...) then spend(...). Each is independently
 ///         useful and independently deployable.
 contract BudgetVault {
+    /// @notice Privileged role: tunes policy, pauses, manages the allowlist, and is the
+    ///         ONLY address that can `withdraw`. Meant to be a human / multisig — NOT the
+    ///         agent. Separating this from `spender` is what makes the security claim true:
+    ///         a compromised agent can spend only within the guardrails, never drain.
     address public owner;
+
+    /// @notice The agent EOA authorized to call `spend` (guarded by all caps/allowlist/pause).
+    ///         It CANNOT withdraw, change policy, or pause. If this key is compromised, the
+    ///         blast radius is bounded by the vault's guardrails, by design.
+    address public spender;
 
     /// @notice The single ERC-20 this vault disburses (e.g. test USDC on Atlantic).
     IERC20 public immutable token;
@@ -76,8 +88,10 @@ contract BudgetVault {
     event Spent(address indexed payee, uint256 amount, uint256 spentInWindow);
     event Deposited(address indexed from, uint256 amount);
     event OwnerTransferred(address indexed previousOwner, address indexed newOwner);
+    event SpenderChanged(address indexed previousSpender, address indexed newSpender);
 
     error NotOwner();
+    error NotSpender();
     error IsPaused();
     error ZeroAmount();
     error PayeeNotAllowed(address payee);
@@ -91,12 +105,23 @@ contract BudgetVault {
         _;
     }
 
+    /// @dev `spend` is restricted to the agent (spender). The owner is intentionally NOT
+    ///      allowed to spend through this path — the owner's lever is `withdraw`. Keeping the
+    ///      roles disjoint means neither key alone is both the guard and the guarded party.
+    modifier onlySpender() {
+        if (msg.sender != spender) revert NotSpender();
+        _;
+    }
+
+    /// @param _spender       Agent EOA allowed to call `spend` (set to the deployer to keep
+    ///                       a single-key dev setup; set to the agent for the secure split).
     /// @param _token         ERC-20 token disbursed by the vault.
     /// @param _perPaymentCap Max per single spend (base units).
     /// @param _windowCap     Max cumulative spend per rolling window (base units).
     /// @param _windowSeconds Sliding window length (seconds). Must be >= BUCKETS so each
     ///                       bucket spans >= 1 second.
     constructor(
+        address _spender,
         address _token,
         uint256 _perPaymentCap,
         uint256 _windowCap,
@@ -104,14 +129,23 @@ contract BudgetVault {
     ) {
         if (_windowSeconds < BUCKETS) revert WindowTooShort(_windowSeconds, BUCKETS);
         owner = msg.sender;
+        spender = _spender;
         token = IERC20(_token);
         perPaymentCap = _perPaymentCap;
         windowCap = _windowCap;
         windowSeconds = _windowSeconds;
         emit PolicyUpdated(_perPaymentCap, _windowCap, _windowSeconds);
+        emit SpenderChanged(address(0), _spender);
     }
 
     // ── Owner controls ───────────────────────────────────────────────────────────
+
+    /// @notice Rotate the agent (spender) — e.g. if the agent key is compromised, the owner
+    ///         revokes it instantly without moving funds. Owner-only.
+    function setSpender(address newSpender) external onlyOwner {
+        emit SpenderChanged(spender, newSpender);
+        spender = newSpender;
+    }
 
     function setPolicy(uint256 _perPaymentCap, uint256 _windowCap, uint256 _windowSeconds)
         external
@@ -195,7 +229,7 @@ contract BudgetVault {
     ///         after PaymentGate.authorizePayment has approved the payee.
     /// @param payee  Recipient of the funds.
     /// @param amount Amount in token base units.
-    function spend(address payee, uint256 amount) external onlyOwner {
+    function spend(address payee, uint256 amount) external onlySpender {
         if (paused) revert IsPaused();
         if (amount == 0) revert ZeroAmount();
         if (amount > perPaymentCap) revert OverPerPaymentCap(amount, perPaymentCap);

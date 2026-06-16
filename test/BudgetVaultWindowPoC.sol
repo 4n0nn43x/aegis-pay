@@ -27,6 +27,12 @@ contract TestToken {
     }
 }
 
+/// External spender (the agent role) — routes spend() so the PoC itself stays the owner
+/// and we avoid `address(this)` (which forge script forbids).
+contract Spender {
+    function doSpend(BudgetVault v, address to, uint256 a) external { v.spend(to, a); }
+}
+
 contract BudgetVaultWindowPoC {
     Vm constant vm = Vm(0x7109709ECfa91a80626fF3989D68f67F5b1DD12D);
 
@@ -35,6 +41,7 @@ contract BudgetVaultWindowPoC {
 
     TestToken token;
     BudgetVault vault;
+    Spender spender;
     address payee = address(0xBEEF);
 
     uint256 constant WINDOW = 120;     // seconds (12 buckets of 10s)
@@ -50,7 +57,8 @@ contract BudgetVaultWindowPoC {
 
     function setUp() internal {
         token = new TestToken();
-        vault = new BudgetVault(address(token), PER, CAP, WINDOW);
+        spender = new Spender();
+        vault = new BudgetVault(address(spender), address(token), PER, CAP, WINDOW);
         token.mint(address(vault), 1000); // fund generously
     }
 
@@ -61,12 +69,12 @@ contract BudgetVaultWindowPoC {
         setUp();
         vm.warp(1_000_000); // a deterministic, nonzero start time
 
-        vault.spend(payee, CAP);                 // spend full cap at t0
+        spender.doSpend(vault, payee, CAP);                 // spend full cap at t0
         emit Log("spent at t0", CAP);
 
         vm.warp(1_000_000 + WINDOW - 1);         // 1s before the window fully elapses
         bool reverted;
-        try vault.spend(payee, CAP) { reverted = false; } catch { reverted = true; }
+        try spender.doSpend(vault, payee, CAP) { reverted = false; } catch { reverted = true; }
         emit Log("remaining 1s before elapse", vault.remainingThisWindow());
         emit Result(reverted ? "2nd full-cap spend REJECTED (OverWindowCap) - fix holds" : "boundary bypass STILL WORKS (REGRESSION)");
         require(reverted, "REGRESSION: boundary double-spend succeeded");
@@ -77,12 +85,12 @@ contract BudgetVaultWindowPoC {
     function check_windowReleasesAfterElapse() internal {
         setUp();
         vm.warp(2_000_000);
-        vault.spend(payee, CAP);                 // full cap
+        spender.doSpend(vault, payee, CAP);                 // full cap
         // Coverage is (BUCKETS+1) buckets = 13 * (120/12) = 130s (conservative over-count
         // by up to one bucket — the SAFE direction). Wait past full coverage, then it frees.
         vm.warp(2_000_000 + WINDOW + 10 + 1); // +131s > 130s coverage (13 buckets * 10s)
         emit Log("remaining after full coverage", vault.remainingThisWindow());
-        vault.spend(payee, CAP);                 // must succeed now
+        spender.doSpend(vault, payee, CAP);                 // must succeed now
         emit Result("spend allowed after coverage elapsed - not bricked");
     }
 
@@ -92,14 +100,15 @@ contract BudgetVaultWindowPoC {
     /// With the BUCKETS+1 fix, coverage >= windowSeconds, so the second spend must REVERT.
     function check_truncationUndercountBlocked() internal {
         token = new TestToken();
-        vault = new BudgetVault(address(token), 100, 100, 23); // windowSeconds=23 (not mult of 12)
+        spender = new Spender();
+        vault = new BudgetVault(address(spender), address(token), 100, 100, 23); // windowSeconds=23 (not mult of 12)
         token.mint(address(vault), 1000);
 
         vm.warp(3_000_000);
-        vault.spend(payee, 100);                 // full cap at t0
+        spender.doSpend(vault, payee, 100);                 // full cap at t0
         vm.warp(3_000_000 + 12);                 // 12s later — still within the 23s window
         bool reverted;
-        try vault.spend(payee, 100) { reverted = false; } catch { reverted = true; }
+        try spender.doSpend(vault, payee, 100) { reverted = false; } catch { reverted = true; }
         emit Log("remaining at t+12 (window=23)", vault.remainingThisWindow());
         emit Result(reverted ? "truncation bypass REJECTED - Low fix holds" : "truncation bypass STILL WORKS (REGRESSION)");
         require(reverted, "REGRESSION: truncation undercount bypass succeeded");

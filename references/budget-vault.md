@@ -33,26 +33,31 @@ transfer. A safe agent does both: `authorizePayment(...)` then `spend(...)`.
 
 Deploy a vault bound to one ERC-20 (e.g. Atlantic test USDC,
 `0xE0BE08c77f415F577A1B3A9aD7a1Df1479564ec8`, 6 decimals). The deployer becomes
-the owner — the only address that can `spend`, retune policy, pause, or withdraw.
+the **owner** — holds policy, pause, allowlist, and the `withdraw` escape hatch.
+The deployer also passes a separate **spender** (the agent EOA) that is the ONLY
+address allowed to call `spend`. Keep them distinct (owner = human/multisig, spender =
+agent) so a compromised agent can't drain — for a single-key dev setup, pass your own
+address as the spender. The owner can rotate the agent anytime via `setSpender`.
 
 ### Command Template
 
 ```bash
-# BudgetVault(token, perPaymentCap, windowCap, windowSeconds)
-# Example: USDC, 5 USDC/payment, 50 USDC/hour
+# BudgetVault(spender, token, perPaymentCap, windowCap, windowSeconds)
+# Example: agent EOA as spender, USDC, 5 USDC/payment, 50 USDC/hour
 forge create assets/budget-vault/BudgetVault.sol:BudgetVault \
   --rpc-url <rpc> --private-key $PRIVATE_KEY \
-  --constructor-args <token> 5000000 50000000 3600
+  --constructor-args <spender_addr> <token> 5000000 50000000 3600
 ```
 
 ### Parameters
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
+| `<spender_addr>` | address | Yes | Agent EOA allowed to call `spend` (only this role can spend) |
 | `<token>` | address | Yes | ERC-20 the vault disburses (USDC = 6 decimals) |
 | `perPaymentCap` | uint256 | Yes | Max per single spend, base units (`5 USDC` = `5000000`) |
 | `windowCap` | uint256 | Yes | Max cumulative spend per window, base units |
-| `windowSeconds` | uint256 | Yes | Rolling window length in seconds (`3600` = 1h) |
+| `windowSeconds` | uint256 | Yes | Sliding window length in seconds (`3600` = 1h) |
 
 ### Output Parsing
 
