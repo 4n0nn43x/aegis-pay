@@ -7,6 +7,17 @@
 Two composable Skills — **Aegis Gate** (`PaymentGate`) and **Aegis Vault** (`BudgetVault`)
 — that make autonomous agent payments on Pharos **safe**.
 
+## Live on Pharos Atlantic (source verified ✓)
+
+| Contract | Address | Explorer |
+|----------|---------|----------|
+| **Aegis Gate** (`PaymentGate`) | `0x6025bda965bebea591eb6d474907206cd5654c62` | [Pharosscan](https://atlantic.pharosscan.xyz/address/0x6025bda965bebea591eb6d474907206cd5654c62) |
+| **Aegis Vault** (`BudgetVault`) | `0x803cf3c49aa2a8ab7a3b9aa67651ef750495b220` | [Pharosscan](https://atlantic.pharosscan.xyz/address/0x803cf3c49aa2a8ab7a3b9aa67651ef750495b220) |
+| MockReputationRegistry (ERC-8004 demo) | `0x1d4a3cb00090775a8c12dd47c5a84a007e5367de` | [Pharosscan](https://atlantic.pharosscan.xyz/address/0x1d4a3cb00090775a8c12dd47c5a84a007e5367de) |
+
+All three are deployed on Atlantic (chain id 688689) and **source-verified on Pharosscan**
+(`Pass - Verified`). `forge build` is clean; regression PoCs in `test/` pass.
+
 ---
 
 ## The gap we fill
@@ -28,16 +39,16 @@ This pack closes both gaps with two small, auditable, composable contracts.
 
 | Skill | Contract | Answers | Moves funds? |
 |-------|----------|---------|--------------|
-| **Trust-Gated Payment** | `PaymentGate` | *WHO may be paid?* — reads ERC-8004 reputation, enforces a min score + min number of ratings | No (pure decision + audit event) |
-| **Budget Vault** | `BudgetVault` | *HOW MUCH may flow?* — per-payment cap, rolling-window cap, payee allowlist, kill-switch | Yes (executes the transfer) |
+| **Aegis Gate** | `PaymentGate` | *WHO may be paid?* — reads ERC-8004 reputation, enforces a min score + min number of ratings | No (pure decision + audit event) |
+| **Aegis Vault** | `BudgetVault` | *HOW MUCH may flow?* — per-payment cap, sliding-window cap, payee allowlist, kill-switch | Yes (executes the transfer) |
 
 **Composability (the judging criterion #1), demonstrated by code:**
 
 ```
-authorizePayment(payeeAgentId, amount)   # Skill #1 — is the payee trusted enough?
+authorizePayment(payeeAgentId, amount)   # Aegis Gate — is the payee trusted enough?
         │  reverts ReputationTooLow / NotEnoughFeedback if not
         ▼
-spend(payeeAddr, amount)                  # Skill #2 — within budget? then transfer
+spend(payeeAddr, amount)                  # Aegis Vault — within budget? then transfer
         │  reverts OverPerPaymentCap / OverWindowCap / IsPaused / PayeeNotAllowed
         ▼
 payment settled on-chain, fully audited (PaymentAuthorized + Spent events)
@@ -70,8 +81,14 @@ pharos-skills/
 │   └── budget-vault/
 │       └── BudgetVault.sol                    # spending guardrails + transfer
 ├── references/
-│   ├── trust-gated-pay.md                     # agent instructions for Skill #1
-│   └── budget-vault.md                        # agent instructions for Skill #2
+│   ├── trust-gated-pay.md                     # agent instructions for Aegis Gate
+│   └── budget-vault.md                        # agent instructions for Aegis Vault
+├── script/
+│   └── Deploy.s.sol                           # deploys the 3 contracts to Atlantic
+├── test/
+│   ├── RoleSeparationPoC.sol                  # proves a compromised agent can't drain
+│   ├── BudgetVaultWindowPoC.sol              # proves the sliding-window cap holds
+│   └── ExploitPoC.sol                         # sybil / negative-grief regression checks
 └── src/                                       # mirror of assets/*.sol (Skill Engine convention)
 ```
 
@@ -80,10 +97,15 @@ pharos-skills/
 ```bash
 # Prereqs
 curl -L https://foundry.paradigm.xyz | bash && foundryup       # forge, cast
-export PRIVATE_KEY=0xYourTestnetKey                            # fund it from the Atlantic faucet
 
-# Compile
+# Compile + run the regression PoCs (no network needed)
 forge build
+forge script test/RoleSeparationPoC.sol:RoleSeparationPoC --sig "run()"      # agent can't drain
+forge script test/BudgetVaultWindowPoC.sol:BudgetVaultWindowPoC --sig "run()" # sliding-window holds
+
+# Deploy to Atlantic (put your funded testnet key in .env as PRIVATE_KEY=0x...)
+forge script script/Deploy.s.sol:Deploy \
+  --rpc-url https://atlantic.dplabs-internal.com --private-key $PRIVATE_KEY --broadcast
 
 # Then drive it in natural language via Claude Code, e.g.:
 #   "Deploy a reputation gate requiring score 7 and at least 3 ratings"
@@ -104,8 +126,11 @@ authorized, budgeted payment).
 - **No private-key handling in code**: keys are passed only via `--private-key
   $PRIVATE_KEY` on the command line, per Skill Engine convention; nothing is read,
   stored, or logged by the contracts or references.
-- **Least privilege**: `spend`, policy changes, pause, allowlist, and withdraw are
-  all `onlyOwner`. `PaymentGate` moves no funds at all.
+- **Separated roles (least privilege)**: the vault splits `owner` (a human/multisig:
+  policy, pause, allowlist, and the `withdraw` escape hatch) from `spender` (the agent:
+  `spend` only, always within the guardrails). So a **compromised agent cannot drain** —
+  it can only spend within `windowCap` per `windowSeconds`, and the owner can revoke it
+  instantly via `setSpender`. `PaymentGate` moves no funds at all.
 - **Human-readable reverts + events on every state change**, so an agent (and an
   auditor) can always tell exactly what happened and why.
 
@@ -118,5 +143,5 @@ authorized, budgeted payment).
 - x402 settlement is performed off-chain by a facilitator; this pack provides the
   **on-chain authorization and budgeted execution** around it (the part x402 says
   is out of scope), not a reimplementation of the x402 wire protocol.
-- `BudgetVault.spend` is `onlyOwner` by design: the agent's signer owns the vault
-  and is the only caller. Multi-signer / delegated-spender setups are future work.
+- The owner is trusted by design (it can `withdraw`); the security claim is that the
+  *agent* (spender) can't drain. For maximal assurance, set `owner` to a multisig.
